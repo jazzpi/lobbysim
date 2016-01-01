@@ -1,4 +1,3 @@
-/* jshint node: true */
 'use strict'
 var irc = require('tmi.js')
   , debug = require('debug')('lobbysim:chat-connection')

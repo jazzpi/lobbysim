@@ -1,4 +1,3 @@
-/* jshint node: true */
 'use strict'
 var steam = require('steam')
   , fs = require('fs')

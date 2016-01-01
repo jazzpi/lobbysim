@@ -1,4 +1,3 @@
-/* jshint node: true */
 'use strict'
 var config = require('./config.json')
   , SteamConnection = require('./steam-connection')
