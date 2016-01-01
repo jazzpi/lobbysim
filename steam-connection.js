@@ -122,7 +122,7 @@ class SteamConnection extends EventEmitter {
         break
       case steam.EResult.AccountLogonDenied:
         console.error('Login denied - Steam Guard code required. Please ' +
-                      'check your E-Mail (***@ ' + resp.email_domain +').')
+                      'check your E-Mail (***@' + resp.email_domain +').')
         break
       case steam.EResult.InvalidLoginAuthCode:
         console.error('Invalid Steam Guard code!')
