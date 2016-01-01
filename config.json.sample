@@ -1,0 +1,17 @@
+{
+  "steam": {
+    "account_name": "LobbySimBot"
+  , "password": "hunter2"
+  , "auth_code": "A1BCD"
+  }
+, "irc": {
+    "username": "lobbysimbot"
+  , "password": "oauth:abcefghi1234567j890klmnopqrst"
+  }
+, "channels": {
+    "#jazzpi": {
+      "chatID": "123456789012345678"
+    , "mainUser": "98765432109876543"
+    }
+  }
+}

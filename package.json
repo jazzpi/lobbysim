@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "steam": "^1.2.0"
+  , "debug": "^2.2.0"
+  , "tmi.js": "^0.0.24"
+  , "object-assign": "^2.0"
+  }
+}
