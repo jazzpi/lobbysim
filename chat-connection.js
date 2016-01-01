@@ -107,21 +107,19 @@ class ChatConnection extends EventEmitter {
    */
   _handleConnecting(name, server, port) {
     this.connectionStatus[name] = 'connecting'
-    debug(`Connecting to ${name} server at ${server}:${port}`)
+    debug(`Connecting to ${name} server at ${server}:${port}.`)
     this.emit('connecting', name, server, port)
   }
 
   /**
    * Handles a 'logon' event from a chat client
    * @param {string} name - The name of the client
-   * @param {string} server - The IP of the server logging into
-   * @param {number} port - The port of the server logging into
    * @private
    */
-  _handleLogon(name, server, port) {
+  _handleLogon(name) {
     this.connectionStatus[name] = 'logon'
-    debug(`Logging in to ${name} server at ${server}:${port}`)
-    this.emit('logon', name, server, port)
+    debug(`Logging in to ${name} server.`)
+    this.emit('logon', name)
   }
 
   /**
@@ -133,34 +131,31 @@ class ChatConnection extends EventEmitter {
    */
   _handleConnected(name, server, port) {
     this.connectionStatus[name] = 'connected'
-    debug(`Connected to ${name} server at ${server}:${port}`)
+    debug(`Connected to ${name} server at ${server}:${port}.`)
     this.emit('connected', name, server, port)
   }
 
   /**
    * Handles a 'disconnected' event from a chat client
    * @param {string} name - The name of the client
-   * @param {string} server - The IP of the server disconnected from
-   * @param {number} port - The port of the server disconnected from
+   * @param {string} reason - Reason why client got disconnected
    * @private
    */
-  _handleDisconnected(name, server, port) {
+  _handleDisconnected(name, reason) {
     this.connectionStatus[name] = 'disconnected'
-    debug(`Disconnected to ${name} server at ${server}:${port}`)
-    this.emit('disconnected', name, server, port)
+    debug(`Disconnected from ${name} server with reason "${reason}".`)
+    this.emit('disconnected', name, reason)
   }
 
   /**
    * Handles a 'reconnect' event from a chat client
    * @param {string} name - The name of the client
-   * @param {string} server - The IP of the server reconnecting to
-   * @param {number} port - The port of the server reconnecting to
    * @private
    */
-  _handleReconnect(name, server, port) {
+  _handleReconnect(name) {
     this.connectionStatus[name] = 'reconnect'
-    debug(`Reconnecting to ${name} server at ${server}:${port}`)
-    this.emit('reconnect', name, server, port)
+    debug(`Reconnecting to ${name} server.`)
+    this.emit('reconnect', name)
   }
 }
 
