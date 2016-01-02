@@ -69,6 +69,7 @@ class ChatConnection extends EventEmitter {
   /**
    * @callback ChatConnection~commandCallback
    * @param {string|Object} user - User object (called from chat) or name (called from whisper)
+   * @param {Array} args - Space-separated arguments to the command
    * @param {string} message - The message with which the command was called
    * @param {string} [channel] - The channel from which the command was called (only present if called from chat)
    */
@@ -140,10 +141,11 @@ class ChatConnection extends EventEmitter {
     if (command === undefined) {
       return
     }
+    let allowed
     if (typeof user === "object") {
-      command.allowed = this._levels[user['user-type']] >= this._levels[command.requiredLevel]
+      allowed = this._levels[user['user-type']] >= this._levels[command.requiredLevel]
     }
-    return command
+    return [command, allowed, _split.slice(1)]
   }
 
   /**
@@ -195,10 +197,13 @@ class ChatConnection extends EventEmitter {
     if (user['user-type'] === null && user.username === channel.replace('#', '')) {
       user['user-type'] = 'broadcaster'
     }
-    let command = this._matchCommand(user, message)
+    let _ret = this._matchCommand(user, message)
+    let command = _ret[0]
+      , allowed = _ret[1]
+      , args = _ret[2]
     if (command !== undefined) {
       if (command.allowed) {
-        command.cb(user, message, channel)
+        command.cb(user, args, message, channel)
       } else {
         this._notAllowed(command, user) // TODO
       }
@@ -213,10 +218,13 @@ class ChatConnection extends EventEmitter {
    */
   _handleWhisper(username, message) {
     debug(`Whisper fom ${username}: ${message}`)
-    let command = this._matchCommand(username, message)
+    let _ret = this._matchCommand(username, message)
+    let command = _ret[0]
+      , allowed = _ret[1]
+      , args = _ret[2]
     if (command !== undefined) {
       if (command.allowsWhisper) {
-        command.cb(username, message)
+        command.cb(username, args, message)
       } else {
         this._dontWhisper(command, username)
       }
