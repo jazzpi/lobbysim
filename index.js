@@ -15,3 +15,9 @@ var chatConnection = new ChatConnection({
 , password: config.irc.password
 , channels: Object.keys(config.channels)
 })
+
+chatConnection.on('disconnected', (name, reason, reconnect) => {
+  if (reason === 'Unable to connect.') {
+    reconnect()
+  }
+})
