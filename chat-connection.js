@@ -63,6 +63,9 @@ class ChatConnection extends EventEmitter {
    */
   addCommand(call, command) {
     command.call = call
+    if (command.requiredLevel !== 'user') {
+      command.allowsWhisper = false
+    }
     this.commands[call] = command
     this.emit('add-command', call, command)
   }

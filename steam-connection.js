@@ -6,15 +6,20 @@ var steam = require('steam')
   , assign = require('object-assign')
   , EventEmitter = require('events')
 
+/**
+ * Options to the SteamConnection
+ * @typedef {Object} SteamConnection~Options
+ * @property {string} account_name - The name of the Steam account to be used
+ * @property {string} password - The password of the Steam account to be used
+ * @property {string} [auth_code] - The Steam Guard code. Not required if Steam Guard is disabled or there is a sentry file.
+ * @property {string} [sentryLocation='.sentryfile'] - The location for the sentry file
+ */
+
 /** A connection to Steam */
 class SteamConnection extends EventEmitter {
   /**
    * Create a Steam connection
-   * @param {Object} options - The options for the Steam connection
-   * @param {string} options.account_name - The name of the Steam account to be used
-   * @param {string} options.password - The password of the Steam account to be used
-   * @param {string} [options.auth_code] - The Steam Guard code. Not required if Steam Guard is disabled or there is a sentry file.
-   * @param {string} [options.sentryLocation] - The location for the sentry file. Defaults to '.sentryfile'
+   * @param {SteamConnection~Options} options - The options for the Steam connection
    */
   constructor(options) {
     super()
