@@ -48,6 +48,7 @@ class ChatConnection extends EventEmitter {
    * @param {string} message - Message
    */
   whisper(username, message) {
+    debug(`Whispering to ${username}: "${message}"`)
     this.whisperClient.whisper(username, message)
   }
 
@@ -143,11 +144,14 @@ class ChatConnection extends EventEmitter {
     let _split = message.split(' ')
     let command = this.commands[_split[0]]
     if (command === undefined) {
-      return
+      return null
     }
     let allowed
     if (typeof user === "object") {
-      allowed = this._levels[user['user-type']] >= this._levels[command.requiredLevel]
+      let actual = this._levels[user['user-type']]
+        , required = this._levels[command.requiredLevel]
+      allowed = actual >= required
+      debug(`${user.username} is ${allowed ? '' : 'not '}allowed to execute ${_split[0]} (required level is ${required}, actual is ${actual})`)
     }
     return [command, allowed, _split.slice(1)]
   }
@@ -159,7 +163,6 @@ class ChatConnection extends EventEmitter {
    * @private
    */
   _notAllowed(command, user) {
-    debug(`${user.username} isn't allowed to execute ${command.call}`)
     if (command.notAllowedMsg !== undefined) {
       this.whisper(command.notAllowedMsg)
     } else {
@@ -176,9 +179,9 @@ class ChatConnection extends EventEmitter {
   _dontWhisper(command, username) {
     debug(`${username} can't execute ${command.call} by whisper`)
     if (command.dontWhisperMsg !== undefined) {
-      this.whisper(command.dontWhisperMsg)
+      this.whisper(username, command.dontWhisperMsg)
     } else {
-      this.whisper(`You can't execute ${command.call} by whisper`)
+      this.whisper(username, `You can't execute ${command.call} by whisper`)
     }
   }
 
@@ -195,13 +198,19 @@ class ChatConnection extends EventEmitter {
       return
     }
     debug(`Chat message fom ${user['display-name']} to ${channel}: ${message}`)
-    if (user['user-type'] === null && user.subscriber) {
-      user['user-type'] = 'sub'
-    }
-    if (user['user-type'] === null && user.username === channel.replace('#', '')) {
-      user['user-type'] = 'broadcaster'
+    if (user['user-type'] === null) {
+      if (user.subscriber) {
+        user['user-type'] = 'sub'
+      } else if (user.username === channel.replace('#', '')) {
+        user['user-type'] = 'broadcaster'
+      } else {
+        user['user-type'] = 'user'
+      }
     }
     let _ret = this._matchCommand(user, message)
+    if (_ret === null) {
+      return
+    }
     let command = _ret[0]
       , allowed = _ret[1]
       , args = _ret[2]
@@ -223,6 +232,9 @@ class ChatConnection extends EventEmitter {
   _handleWhisper(username, message) {
     debug(`Whisper fom ${username}: ${message}`)
     let _ret = this._matchCommand(username, message)
+    if (_ret === null) {
+      return
+    }
     let command = _ret[0]
       , allowed = _ret[1]
       , args = _ret[2]
