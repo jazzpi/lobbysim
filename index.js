@@ -39,7 +39,17 @@ class LobbySim extends EventEmitter {
     this.initDB(config.db)
     config.irc.channels = Object.keys(config.channels)
     this.chatConnection = new ChatConnection(config.irc)
-    this.channels = []
+    this.channels = {}
+    for (var key in this.config.channels) {
+      if (this.config.channels.hasOwnProperty(key)) {
+        let channel = this.config.channels[key]
+        this.channels[channel.chatID] = {
+          allowedMembers: [channel.mainUser]
+        , state: 'joining'
+        , key: key
+        }
+      }
+    }
 
     this.chatConnection.on('disconnected', (name, reason, reconnect) => {
       if (reason === 'Unable to connect.') {
@@ -56,6 +66,9 @@ class LobbySim extends EventEmitter {
             break
           case 'close':
             this.closeDrawing(channel, user.username, args[1])
+            break
+          case 'reroll':
+            this.rerollDrawing(channel, user.username, args[1])
             break
           default:
             this.drawingUsage(user.username)
@@ -83,7 +96,7 @@ class LobbySim extends EventEmitter {
                 this.chatConnection.whisper(user.username, 'You are already in the drawing!')
                 return
               }
-              this.enterDrawing(user, channel)
+              this.enterDrawing(channel, user)
             })
         } else {
           request(args[0] + '?xml=1', (error, response, body) => {
@@ -110,8 +123,13 @@ class LobbySim extends EventEmitter {
                     this.db.into('users')
                       .insert({username: user.username, steamID: res.profile.steamID64[0]})
                       .then(() => {
-                        this.enterDrawing(user, channel)
-                      }) // Empty handler so the query gets run
+                        this.enterDrawing(channel, user)
+                      })
+                  } else {
+                    if (this.drawings[channel].entries.indexOf(user.username) !== -1) {
+                      return
+                    }
+                    this.enterDrawing(channel, user)
                   }
                 })
             })
@@ -124,14 +142,24 @@ class LobbySim extends EventEmitter {
       cb: (user, args, message, channel) => {
         let index = -2
         while ((index = this.drawings[channel].entries.indexOf(user['display-name'])) != -1) {
-          this.drawings.pop(index)
+          this.drawings.splice(index, 1)
         }
+        this.db.from('entries')
+          .where('username', user.username)
+          .del()
+          .then() // Empty Promise so the query gets run
       }
     })
 
     this.chatConnection.addCommand('!winners', {
       cb: (user, args, message, channel) => {
+        this.chatConnection.say(channel, this._winnersMsg(channel))
+      }
+    })
 
+    this.chatConnection.addCommand('!losers', {
+      cb: (user, args, message, channel) => {
+        this.chatConnection.say(channel, `The losers are: ${user.username}!`)
       }
     })
 
@@ -150,15 +178,18 @@ class LobbySim extends EventEmitter {
         , winners: []
         , entries: []
         , msgInterval: () => {}
+        , lastTime: -1
         }
         this.on('initialized-db', () => {
-          this.db.select('id', 'open').from('drawings').where('channel', channel)
+          this.db.select('id', 'open', 'lastTime').from('drawings')
+            .where('channel', channel)
             .then((rows) => {
               if (rows.length === 0) {
                 debug(`Creating entry for ${channel} in database...`)
                 this.db.insert({
                   open: false
                 , channel: channel
+                , lastTime: -1
                 }).into('drawings').then(id => {
                   debug(`Created entry for ${channel} in database with ID ${id[0]}`)
                   this.drawings[channel].id = id[0]
@@ -166,11 +197,23 @@ class LobbySim extends EventEmitter {
               } else {
                 this.drawings[channel].id = rows[0].id
                 this.drawings[channel].open = rows[0].open
-                debug(`Fetching entries for drawing in ${channel} from database...`)
+                this.drawings[channel].lastTime = rows[0].lastTime
+                debug(`Fetching entries + winners for drawing in ${channel} from database...`)
                 this.db.select('username').from('entries')
                   .where('draw_id', rows[0].id)
                   .then(rows => {
-                    this.drawings[channel].entries = rows
+                    this.drawings[channel].entries = rows.map(row => row.username)
+                  })
+                this.db.select('username', 'steamID')
+                  .from('winners')
+                  .join('users', 'winners.user', 'users.username')
+                  .whereRaw('time = (select max(time) from winners)')
+                  .andWhere('channel', channel)
+                  .then(rows => {
+                    this.drawings[channel].winners = rows.map(row => row.username)
+                    let channelConfig = this.config.channels[channel]
+                    this.channels[channelConfig.chatID].allowedMembers = [channelConfig.mainUser]
+                      .concat(rows.map(row => row.steamID))
                   })
               }
             })
@@ -188,11 +231,11 @@ class LobbySim extends EventEmitter {
     let tableCount = 0
     let incTableCount = () => {
       tableCount++
-      if (tableCount === 3) {
+      if (tableCount === 4) {
         debug('Done initializing database')
         this.emit('initialized-db')
       } else {
-        debug(`Initialized table ${tableCount}/3`)
+        debug(`Initialized table ${tableCount}/4`)
       }
     }
     debug('checking users')
@@ -204,7 +247,6 @@ class LobbySim extends EventEmitter {
           return
         }
 
-        debug("users doesn't exist, creating...")
         this.db.schema.createTable('users', t => {
           t.increments('id').primary()
           t.string('username', 50).index()
@@ -222,6 +264,7 @@ class LobbySim extends EventEmitter {
           t.increments('id').primary()
           t.string('channel', 50).index()
           t.boolean('open').defaultTo(false)
+          t.dateTime('lastTime')
         }).then(incTableCount)
       })
     this.db.schema.hasTable('entries')
@@ -234,7 +277,21 @@ class LobbySim extends EventEmitter {
         this.db.schema.createTable('entries', t => {
           t.increments('id').primary()
           t.integer('draw_id').references('id').inTable('drawings')
-          t.integer('user_id').references('id').inTable('users')
+          t.string('username', 50).references('username').inTable('users')
+        }).then(incTableCount())
+      })
+    this.db.schema.hasTable('winners')
+      .then(exists => {
+        if (exists) {
+          incTableCount()
+          return
+        }
+
+        this.db.schema.createTable('winners', t => {
+          t.increments('id').primary()
+          t.dateTime('time')
+          t.string('channel', 50).references('channel').inTable('drawings')
+          t.string('user', 50).references('username').inTable('users')
         }).then(incTableCount())
       })
   }
@@ -249,6 +306,7 @@ class LobbySim extends EventEmitter {
       this.chatConnection.whisper(username, 'There already is an open drawing!')
       return
     }
+    debug(`Opening a drawing in ${channel}`)
     this.drawings[channel].open = true
     this.drawings[channel].winners = []
     this.drawings[channel].entries = []
@@ -257,6 +315,7 @@ class LobbySim extends EventEmitter {
     this.db('drawings').where('id', this.drawings[channel].id)
       .update({open: true})
       .then() // Empty handler so the query gets run
+    this.db('entries').where('draw_id', this.drawings[channel].id).del().then()
   }
 
   /**
@@ -274,55 +333,69 @@ class LobbySim extends EventEmitter {
       this.drawingUsage(username)
       return
     }
+    debug(`Closing drawing in ${channel}`)
     this.drawings[channel].open = false
+    let lastTime = (new Date).getTime()
+    this.drawings[channel].lastTime = lastTime
     this.db('drawings').where('id', this.drawings[channel].id)
-      .update({open: false})
+      .update({open: false, lastTime: lastTime})
       .then() // Empty handler so the query gets run
     clearInterval(this.drawings[channel].msgInterval)
 
     // Pick winners
     let entries = this.drawings[channel].entries
-    let msg
-    let winners = []
-    if (entries.length === 0) {
-      msg = 'The drawing has been closed with no entrants!'
-    } else {
+    debug(`Picking winners from ${entries}`)
+    if (entries.length !== 0) {
       for (let i = 0; i < nWinners; i++) {
-        if (entries.length === 0) {
+        if (this._pickWinner(channel) === null) {
           break
         }
-        let winner = entries[Math.floor(Math.random() * entries.length)]
-        // Remove extra tickets winner had (e.g. for subs with double chances)
-        for (let j = entries.length - 1; j >= 0; j--) {
-          if (entries[j] === winner) {
-            entries.splice(j, 1)
-          }
-        }
-        winners.push(winner)
       }
-
-      debug(winners)
-      msg = 'The drawing has been closed! The winners are: '
-      for (let i = 0; i < winners.length - 1; i++) {
-        msg += winners[i] + ', '
-      }
-      msg += winners[winners.length - 1]
     }
-    this.chatConnection.say(channel, msg)
-    this.drawings[channel].winners = winners
+    this.chatConnection.say(channel, this._winnersMsg(channel))
+
+    // Add winners to allowed members in steam chat
+    let channelConfig = this.config.channels[channel]
+    this.kickForbiddenUsers(channelConfig.chatID)
   }
 
   /** Enter a user into a drawing
    * @param {Object} user - User object
    * @param {string} channel - Channel of the drawing
    */
-  enterDrawing(user, channel) {
+  enterDrawing(channel, user) {
+    debug(`Adding tickets for ${user.username}`)
     let tickets = user.subscriber ? this.config.subMultiplier : 1
     for (let i = 0; i < tickets; i++) {
-      this.drawings[channel].entries.push(user['display-name'])
+      debug(`Adding a ticket for ${user.username}`)
+      this.drawings[channel].entries.push(user.username)
       this.db.into('entries')
         .insert({username: user.username, draw_id: this.drawings[channel].id})
+        .then() // Empty Promise so the query gets run
     }
+  }
+
+  /** Rerolls a winner in a drawing
+   * @param {string} username - Username that sent the command
+   * @param {string} channel - Channel of the drawing
+   * @param {string} winner - The winner to reroll
+   */
+  rerollDrawing(channel, username, winner) {
+    if (typeof winner === 'undefined') {
+      this.drawingUsage(username)
+      return
+    }
+    if (!this._removeWinner(channel, winner)) {
+      this.chatConnection.whisper(username, `${winner} didn't win the drawing!`)
+      return
+    }
+    debug(`Rerolling user ${winner} in ${channel}`)
+    let newWinner = this._pickWinner(channel)
+    if (newWinner === null) {
+      this.chatConnection.say(channel, 'There are no entrants left')
+      return
+    }
+    this.chatConnection.say(channel, `${winner} has been replaced by ${newWinner}!`)
   }
 
   /**
@@ -332,7 +405,8 @@ class LobbySim extends EventEmitter {
   drawingUsage(username) {
     this.chatConnection.whisper(username,
       '!draw usage: !draw open to open a drawing | ' +
-      '!draw close <number of winners> to close a drawing')
+      '!draw close <number of winners> to close a drawing | ' +
+      '!draw reroll <user> to reroll a winner')
   }
 
   /**
@@ -352,7 +426,8 @@ class LobbySim extends EventEmitter {
    * @return {boolean}
    */
   isAllowed(chatID, userID) {
-    return (this.channels[chatID].allowedMembers.indexOf(userID) !== -1)
+    return (this.channels[chatID].allowedMembers.indexOf(userID) !== -1 ||
+      userID === this.steamConnection.client.steamID)
   }
 
   /** Join the Steam group chats */
@@ -361,11 +436,6 @@ class LobbySim extends EventEmitter {
       if (this.config.channels.hasOwnProperty(key)) {
         let channel = this.config.channels[key]
         this.steamConnection.friends.joinChat(channel.chatID)
-        this.channels[channel.chatID] = {
-          allowedMembers: [channel.mainUser]
-        , state: 'joining'
-        , key: key
-        }
       }
     }
   }
@@ -375,18 +445,27 @@ class LobbySim extends EventEmitter {
    * @param {number} id - ID of the chat
    * @param {number} response - Response from Steam
    */
-  steamChatEntered(id, response) {
-    if (!(id in this.channels)) {
-      debug(`Received a chatEnter event for an unknown chat (${id}): ${response}`)
+  steamChatEntered(chatID, response) {
+    if (!(chatID in this.channels)) {
+      debug(`Received a chatEnter event for an unknown chat (${chatID}): ${response}`)
       return
     }
     if (response !== steam.EChatRoomEnterResponse.Success) {
-      console.error(`Couldn't join chat with ID ${id}, response was ${response}`)
-      this.channels[id].state = 'failed'
+      console.error(`Couldn't join chat with ID ${chatID}, response was ${response}`)
+      this.channels[chatID].state = 'failed'
       return
     }
-    debug(`Successfully joined chat with ID ${id}!`)
-    this.channels[id].state = 'joined'
+    debug(`Successfully joined chat with ID ${chatID}!`)
+    this.channels[chatID].state = 'joined'
+    this.kickForbiddenUsers(chatID)
+  }
+
+  kickForbiddenUsers(chatID) {
+    for (var userID in this.steamConnection.friends.chatRooms[chatID]) {
+      if (this.steamConnection.friends.chatRooms[chatID].hasOwnProperty(userID)) {
+        this._kickIfForbidden(chatID, userID)
+      }
+    }
   }
 
   /**
@@ -401,9 +480,7 @@ class LobbySim extends EventEmitter {
     switch(change) {
       case steam.EChatMemberStateChange.Entered:
         debug(`User with ID ${userID} entered the room for ${chatName}`)
-        if (!this.isAllowed(chatID, userID)) {
-          this.steamConnection.ban(chatID, userID)
-        }
+        this._kickIfForbidden(chatID, userID)
         break
       case steam.EChatMemberStateChange.Left:
         debug(`User with ID ${userID} left the room for ${chatName}`)
@@ -426,6 +503,76 @@ class LobbySim extends EventEmitter {
       default:
         debug(`Unknown chatStateChange event with change code ${change} in room for ${chatName}`)
       }
+  }
+
+  _kickIfForbidden(chatID, userID) {
+    if (!this.isAllowed(chatID, userID)) {
+      debug(`User with ID ${userID} isn't allowed in room with ID ${chatID} - kicking.`)
+      this.steamConnection.friends.kick(chatID, userID)
+    }
+  }
+
+  _winnersMsg(channel) {
+    let winners = this.drawings[channel].winners
+    let msg
+    if (winners.length === 0) {
+      msg = 'The drawing has been closed with no entrants!'
+    } else {
+      msg = 'The drawing has been closed. The winners are: '
+      for (let i = 0; i < winners.length - 1; i++) {
+        msg += winners[i] + ', '
+      }
+      msg += winners[winners.length - 1]
+      msg += '! Please join the chat at steam://friends/joinchat/103582791439961479'
+    }
+    return msg
+  }
+
+  _pickWinner(channel) {
+    let entries = this.drawings[channel].entries
+    let time = this.drawings[channel].lastTime
+    debug(`Picking a random winner from ${entries}`)
+    if (entries.length === 0) {
+      return null
+    }
+    let winner = entries[Math.floor(Math.random() * entries.length)]
+    // Remove extra tickets winner had (e.g. for subs with double chances)
+    this.db('entries').where('username', winner).del().then()
+    for (let j = entries.length - 1; j >= 0; j--) {
+      if (entries[j] === winner) {
+        entries.splice(j, 1)
+      }
+    }
+    this.drawings[channel].winners.push(winner)
+    this.db('winners')
+      .insert({user: winner, channel: channel, time: time})
+      .then() // Empty Promise so the query gets run
+    this.db('users').select('steamID').where('username', winner).then(rows => {
+      this.channels[this.config.channels[channel].chatID].allowedMembers.push(rows[0].steamID)
+    })
+    return winner
+  }
+
+  _removeWinner(channel, winner) {
+    let winners = this.drawings[channel].winners
+    let index = winners.indexOf(winner)
+    if (index === -1) {
+      return false
+    }
+    debug(`Removing ${winner} from the winners for ${channel}`)
+    winners.splice(index, 1)
+    this.db('winners')
+      .where({user: winner, time: this.drawings[channel].lastTime})
+      .del()
+      .then()
+    this.db('users')
+      .select('steamID')
+      .where({username: winner})
+      .then(rows => {
+        let channel_ = this.channels[this.config.channels[channel].chatID]
+        channel_.allowedMembers.splice(channel_.allowedMembers.indexOf(rows[0].steamID))
+      })
+    return true
   }
 }
 

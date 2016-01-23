@@ -161,20 +161,20 @@ steamFriends.on('chatEnter', function(id, response) {
 steamFriends.on('chatStateChange', function(change, user, chat, by) {
   switch (change) {
     case Steam.EChatMemberStateChange.Entered:
-      debug(user + ' entered the room.')
+      debug(`${user} entered the room.`)
       if (!isAllowedMember(user)) steamFriends.ban(chat, user)
       break
     case Steam.EChatMemberStateChange.Left:
-      debug(user + ' left the room.')
+      debug(`${user} left the room.`)
       break
     case Steam.EChatMemberStateChange.Disconnected:
-      debug(user + ' disconnected from the room.')
+      debug(`${user} disconnected from the room.`)
       break
     case Steam.EChatMemberStateChange.Kicked:
-      debug(user + ' was kicked from the room by ' + by + '.')
+      debug(`${user} was kicked from the room by ${by}.`)
       break
     case Steam.EChatMemberStateChange.Banned:
-      debug(user + ' was banned from the room by ' + by + '.')
+      debug(`${user} was banned from the room by ${by}`)
       break
     case Steam.EChatMemberStateChange.VoiceSpeaking:
       debug('Voice chat starting')

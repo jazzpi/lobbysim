@@ -80,7 +80,7 @@ class SteamConnection extends EventEmitter {
           this.checkLogOn()
         })
       } else {
-        debug("Sentry file doesn't exist.")
+        debug('Sentry file doesn\'t exist.')
         this.sentryRead = true
         this.checkLogOn()
       }
