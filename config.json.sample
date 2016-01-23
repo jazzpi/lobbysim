@@ -10,8 +10,15 @@
   }
 , "channels": {
     "#jazzpi": {
-      "chatID": 123456789012345678
-    , "mainUser": 98765432109876543
+      "chatID": "123456789012345678"
+    , "mainUser": "98765432109876543"
     }
   }
+, "db": {
+    "client": "sqlite3"
+  , "connection": {
+      "filename": "./lobbysim.sqlite"
+    }
+  }
+, "subMultiplier": 2
 }

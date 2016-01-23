@@ -3,6 +3,10 @@ var SteamConnection = require('./steam-connection')
   , ChatConnection = require('./chat-connection')
   , debug = require('debug')('lobbysim:index')
   , steam = require('steam')
+  , knex = require('knex')
+  , EventEmitter = require('events')
+  , request = require('request')
+  , parseXML = require('xml2js').parseString
 
 /**
  * A channel to connect to
@@ -17,7 +21,7 @@ var SteamConnection = require('./steam-connection')
  */
 
 /** The main Lobby Simulator class */
-class LobbySim {
+class LobbySim extends EventEmitter {
   /**
    * Create a Lobby Simulator
    * @param {Object} config - The configuration
@@ -25,10 +29,14 @@ class LobbySim {
    * @param {Object} config.irc - Configuration for the Chat connection
    * @param {string} config.irc.username - Twitch username to use
    * @param {string} config.irc.password - OAuth token to authenticate with
+   * @param {Object} config.db - A knex connection configuration
+   * @param {number} config.subMultiplier - The multiplier for subscriber entries
    * @param {Object.<LobbySim~TwitchChannel, LobbySim~Channel>} config.channels - Channels to connect to
    */
   constructor(config) {
+    super()
     this.config = config
+    this.initDB(config.db)
     config.irc.channels = Object.keys(config.channels)
     this.chatConnection = new ChatConnection(config.irc)
     this.channels = []
@@ -57,13 +65,67 @@ class LobbySim {
 
     this.chatConnection.addCommand('!play', {
       cb: (user, args, message, channel) => {
-
+        if (!this.drawings[channel].open) {
+          this.chatConnection.whisper(user.username, 'There is no open drawing!')
+          debug(`${user['display-name']} tried to enter a closed drawing in ${channel}`)
+          return
+        }
+        if (args.length === 0) {
+          this.db.select('steamID', 'id')
+            .from('users')
+            .where('username', user.username)
+            .then(rows => {
+              if (rows.length === 0) {
+                this.chatConnection.whisper(user.username, 'Append a link to your steam profile to enter the drawing (e.g. !play steamcommunity.com/id/resonancesteam)')
+                return
+              }
+              if (this.drawings[channel].entries.indexOf(user.username) !== -1) {
+                this.chatConnection.whisper(user.username, 'You are already in the drawing!')
+                return
+              }
+              this.enterDrawing(user, channel)
+            })
+        } else {
+          request(args[0] + '?xml=1', (error, response, body) => {
+            if (error) {
+              debug(`Error while trying to fetch ${args[0]}: ${error}`)
+              // TODO
+              return
+            }
+            if (response.statusCode !== 200) {
+              debug(`Status code wasn't 200 (was ${response.statusCode}) when fetching ${args[0]}`)
+            }
+            parseXML(body, (err, res) => {
+              if (err) {
+                debug(`Error while trying to parse the response from ${args[0]}: ${err}`)
+                // TODO
+                return
+              }
+              debug(`Updating ${user.username} with ID ${res.profile.steamID64[0]}`)
+              this.db.from('users')
+                .where('username', user.username)
+                .update({steamID: res.profile.steamID64[0]})
+                .then(affected => {
+                  if (affected === 0) {
+                    this.db.into('users')
+                      .insert({username: user.username, steamID: res.profile.steamID64[0]})
+                      .then(() => {
+                        this.enterDrawing(user, channel)
+                      }) // Empty handler so the query gets run
+                  }
+                })
+            })
+          })
+        }
       }
     })
 
     this.chatConnection.addCommand('!quit', {
       cb: (user, args, message, channel) => {
-
+        let index = -2
+        while ((index = this.drawings[channel].entries.indexOf(user['display-name'])) != -1) {
+          this.drawings.pop(index)
+        }
       }
     })
 
@@ -89,8 +151,92 @@ class LobbySim {
         , entries: []
         , msgInterval: () => {}
         }
+        this.on('initialized-db', () => {
+          this.db.select('id', 'open').from('drawings').where('channel', channel)
+            .then((rows) => {
+              if (rows.length === 0) {
+                debug(`Creating entry for ${channel} in database...`)
+                this.db.insert({
+                  open: false
+                , channel: channel
+                }).into('drawings').then(id => {
+                  debug(`Created entry for ${channel} in database with ID ${id[0]}`)
+                  this.drawings[channel].id = id[0]
+                })
+              } else {
+                this.drawings[channel].id = rows[0].id
+                this.drawings[channel].open = rows[0].open
+                debug(`Fetching entries for drawing in ${channel} from database...`)
+                this.db.select('username').from('entries')
+                  .where('draw_id', rows[0].id)
+                  .then(rows => {
+                    this.drawings[channel].entries = rows
+                  })
+              }
+            })
+        })
       }
     }
+  }
+
+  /**
+   * Initialize the database
+   * @param {Object} cfg - A knex database configuration
+   */
+  initDB(cfg) {
+    this.db = knex(cfg)
+    let tableCount = 0
+    let incTableCount = () => {
+      tableCount++
+      if (tableCount === 3) {
+        debug('Done initializing database')
+        this.emit('initialized-db')
+      } else {
+        debug(`Initialized table ${tableCount}/3`)
+      }
+    }
+    debug('checking users')
+    this.db.schema.hasTable('users')
+      .then(exists => {
+        debug('checked users')
+        if (exists) {
+          incTableCount()
+          return
+        }
+
+        debug("users doesn't exist, creating...")
+        this.db.schema.createTable('users', t => {
+          t.increments('id').primary()
+          t.string('username', 50).index()
+          t.string('steamID', 20)
+        }).then(incTableCount)
+      })
+    this.db.schema.hasTable('drawings')
+      .then(exists => {
+        if (exists) {
+          incTableCount()
+          return
+        }
+
+        this.db.schema.createTable('drawings', t => {
+          t.increments('id').primary()
+          t.string('channel', 50).index()
+          t.boolean('open').defaultTo(false)
+        }).then(incTableCount)
+      })
+    this.db.schema.hasTable('entries')
+      .then(exists => {
+        if (exists) {
+          incTableCount()
+          return
+        }
+
+        this.db.schema.createTable('entries', t => {
+          t.increments('id').primary()
+          t.integer('draw_id').references('id').inTable('drawings')
+          t.integer('user_id').references('id').inTable('users')
+        }).then(incTableCount())
+      })
   }
 
   /**
@@ -100,14 +246,17 @@ class LobbySim {
    */
   openDrawing(channel, username) {
     if (this.drawings[channel].open) {
-      this.chatConnection.whisper(username, 'There is already an open drawing!')
+      this.chatConnection.whisper(username, 'There already is an open drawing!')
       return
     }
     this.drawings[channel].open = true
     this.drawings[channel].winners = []
     this.drawings[channel].entries = []
     this.openDrawingMsg(channel)
-    this.drawings[channel].msgInterval = setInterval(this.openDrawingMsg.bind(this, channel))
+    this.drawings[channel].msgInterval = setInterval(this.openDrawingMsg.bind(this, channel), 30000)
+    this.db('drawings').where('id', this.drawings[channel].id)
+      .update({open: true})
+      .then() // Empty handler so the query gets run
   }
 
   /**
@@ -126,32 +275,54 @@ class LobbySim {
       return
     }
     this.drawings[channel].open = false
+    this.db('drawings').where('id', this.drawings[channel].id)
+      .update({open: false})
+      .then() // Empty handler so the query gets run
     clearInterval(this.drawings[channel].msgInterval)
 
     // Pick winners
     let entries = this.drawings[channel].entries
+    let msg
     let winners = []
-    for (let i = 0; i < nWinners; i++) {
-      if (entries.length === 0) {
-        break
-      }
-      let winner = entries[Math.floor(Math.random() * entries.length)]
-      // Remove extra tickets winner had (e.g. for subs with double chances)
-      for (let j = entries.length - 1; j >= 0; j--) {
-        if (entries[j] === winner) {
-          entries.splice(j, 1)
+    if (entries.length === 0) {
+      msg = 'The drawing has been closed with no entrants!'
+    } else {
+      for (let i = 0; i < nWinners; i++) {
+        if (entries.length === 0) {
+          break
         }
+        let winner = entries[Math.floor(Math.random() * entries.length)]
+        // Remove extra tickets winner had (e.g. for subs with double chances)
+        for (let j = entries.length - 1; j >= 0; j--) {
+          if (entries[j] === winner) {
+            entries.splice(j, 1)
+          }
+        }
+        winners.push(winner)
       }
-      winners.push(winner)
-    }
 
-    let msg = 'The drawing has been closed! The winners are: '
-    for (let i = 0; i < winners.length - 1; i++) {
-      msg += winners[i] + ', '
+      debug(winners)
+      msg = 'The drawing has been closed! The winners are: '
+      for (let i = 0; i < winners.length - 1; i++) {
+        msg += winners[i] + ', '
+      }
+      msg += winners[winners.length - 1]
     }
-    msg += winners[winners.length - 1]
     this.chatConnection.say(channel, msg)
     this.drawings[channel].winners = winners
+  }
+
+  /** Enter a user into a drawing
+   * @param {Object} user - User object
+   * @param {string} channel - Channel of the drawing
+   */
+  enterDrawing(user, channel) {
+    let tickets = user.subscriber ? this.config.subMultiplier : 1
+    for (let i = 0; i < tickets; i++) {
+      this.drawings[channel].entries.push(user['display-name'])
+      this.db.into('entries')
+        .insert({username: user.username, draw_id: this.drawings[channel].id})
+    }
   }
 
   /**
@@ -170,8 +341,8 @@ class LobbySim {
    */
   openDrawingMsg(channel) {
     this.chatConnection.say(channel,
-      'There is now an open drawing! Type !play ' +
-      '<link to steam profile> to enter!')
+      'There is now an open drawing! Type !play <link to steam profile> to ' +
+      'enter!')
   }
 
   /**

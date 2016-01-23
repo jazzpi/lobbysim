@@ -55,7 +55,7 @@ class SteamConnection extends EventEmitter {
       this.connected = true
       this.emit('connected')
       debug('Connected!')
-      this.checkLogOn() // TODO
+      this.checkLogOn()
     })
     this.client.connect()
     this.emit('connecting')

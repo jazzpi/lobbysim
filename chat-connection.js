@@ -63,6 +63,7 @@ class ChatConnection extends EventEmitter {
    */
   addCommand(call, command) {
     command.call = call
+    command.requiredLevel = command.requiredLevel || 'user'
     if (command.requiredLevel !== 'user') {
       command.allowsWhisper = false
     }
@@ -158,7 +159,7 @@ class ChatConnection extends EventEmitter {
    * @private
    */
   _notAllowed(command, user) {
-    debug(`${user.name} isn't allowed to execute ${command.call}`)
+    debug(`${user.username} isn't allowed to execute ${command.call}`)
     if (command.notAllowedMsg !== undefined) {
       this.whisper(command.notAllowedMsg)
     } else {
@@ -205,10 +206,10 @@ class ChatConnection extends EventEmitter {
       , allowed = _ret[1]
       , args = _ret[2]
     if (command !== undefined) {
-      if (command.allowed) {
+      if (allowed) {
         command.cb(user, args, message, channel)
       } else {
-        this._notAllowed(command, user) // TODO
+        this._notAllowed(command, user)
       }
     }
   }
